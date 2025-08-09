@@ -1,4 +1,4 @@
-Future Sportler: AI Engineer Task 2 - Cricket Motion Analysis
+#Future Sportler: AI Engineer Task 2 - Cricket Motion Analysis
 1. Introduction
 This project presents a comprehensive, end-to-end AI solution for multi-role cricket player analysis. It was developed as a submission for the AI Engineer hiring process at Future Sportler, specifically addressing Task 2: Cricket – Batting, Bowling & Fielding Motion Analysis. The pipeline processes raw video inputs to provide meaningful 3D feedback and visual insights, emphasizing generalizability and clarity of analysis.
 
