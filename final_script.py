@@ -21,7 +21,7 @@ VIDEO_PATHS = [
     "/content/drive/MyDrive/Cricket_Analysis_project/Videos/Video-2.mp4",
     "/content/drive/MyDrive/Cricket_Analysis_project/Videos/Video-3.mp4",
     "/content/drive/MyDrive/Cricket_Analysis_project/Videos/Video-4.mp4",
-    "/content/drive/MyDrive/Cricket_Analysis_project/Videos/Video-5.mp4"
+    "/content/drive/MyDrive/Cricket_Analysis_project/Videos/Video-5.mp4",
 ]
 
 # Set output directory and create it if it doesn't exist
@@ -53,6 +53,24 @@ CONNECTIONS = [
     (23, 25), (25, 27), (27, 29), (29, 31), # Left leg
     (24, 26), (26, 28), (28, 30), (30, 32)  # Right leg
 ]
+
+# ===== IDEAL BIOMECHANICS FOR CORRECTION MODELS =====
+# Define a simple dictionary of ideal angles for key poses.
+# These values are examples and should be based on biomechanical research.
+IDEAL_ANGLES = {
+    "Bowler": {
+        "release_angle": 175,  # Close to a straight arm
+        "release_frame": 0.5  # Example: check at 50% of the bowling action
+    },
+    "Batsman": {
+        "back_angle": 90, # A relatively straight back for a stable stance
+        "max_bat_angle": 90 # Bat should not be parallel to the ground
+    },
+    "Fielder": {
+        "spread_angle": 100, # A wide stance for better stability
+        "knee_bend": 120 # A low posture for a ready position
+    }
+}
 
 
 # ===== REAL VIDEO PROCESSING FUNCTION (REPLACES DUMMY GENERATION) =====
@@ -176,6 +194,23 @@ def calculate_spread_angle(frame_coords, joint_map):
     angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
     return np.degrees(angle)
 
+# ===== CORRECTION ANALYSIS FUNCTION =====
+def analyze_for_corrections(role, angles, ideal_angles):
+    """
+    Analyzes biomechanical angles against ideal standards and provides corrections.
+    """
+    corrections = []
+    if role == "Bowler":
+        if abs(angles['right_elbow_angle'] - ideal_angles['Bowler']['release_angle']) > 5:
+            corrections.append("Bowler: Arm is not straight enough at release. Strive for a straighter elbow.")
+    elif role == "Batsman":
+        if angles['back_angle'] < (ideal_angles['Batsman']['back_angle'] - 10):
+            corrections.append("Batsman: Back angle is too low. Maintain an upright posture for better balance.")
+    elif role == "Fielder":
+        if angles['spread_angle'] < (ideal_angles['Fielder']['spread_angle'] - 10):
+            corrections.append("Fielder: Stance is too narrow. Widen your feet for a more stable base.")
+    return corrections
+
 # ===== MAIN EXECUTION LOOP =====
 def run_analysis_pipeline(video_path, role_model):
     """
@@ -196,28 +231,32 @@ def run_analysis_pipeline(video_path, role_model):
     num_joints = len(coord_cols) // 3
 
     roles = role_model.predict(coords)
-    right_elbow_angles, back_angles, spread_angles = [], [], []
+    right_elbow_angles, back_angles, spread_angles, all_corrections = [], [], [], []
 
     for i in range(len(coords)):
         frame_coords_flat = coords[i]
         frame_coords = frame_coords_flat.reshape(num_joints, 3)
+        current_role = roles[i]
 
         try:
             elbow_angle = calculate_angle(frame_coords[JOINT_MAP['right_shoulder']], frame_coords[JOINT_MAP['right_elbow']], frame_coords[JOINT_MAP['right_wrist']])
-            right_elbow_angles.append(elbow_angle)
             back_angle = calculate_back_angle(frame_coords, JOINT_MAP)
-            back_angles.append(back_angle)
             spread_angle = calculate_spread_angle(frame_coords, JOINT_MAP)
-            spread_angles.append(spread_angle)
         except KeyError:
             print("⚠️ Could not find all necessary joints for angle calculation.")
-            right_elbow_angles.append(np.nan)
-            back_angles.append(np.nan)
-            spread_angles.append(np.nan)
+            elbow_angle, back_angle, spread_angle = np.nan, np.nan, np.nan
+
+        right_elbow_angles.append(elbow_angle)
+        back_angles.append(back_angle)
+        spread_angles.append(spread_angle)
+
+        angles = {'right_elbow_angle': elbow_angle, 'back_angle': back_angle, 'spread_angle': spread_angle}
+        corrections = analyze_for_corrections(current_role, angles, IDEAL_ANGLES)
+        all_corrections.append(corrections)
 
     print(f"✅ Processed {len(roles)} frames for {video_name}.")
 
-    output_video_path = os.path.join(OUTPUT_DIR, f"{video_name}_3d_pose_with_roles.mp4")
+    output_video_path = os.path.join(OUTPUT_DIR, f"{video_name}_3d_pose_with_roles_and_corrections.mp4")
     fig_3d = plt.figure(figsize=(10, 8))
     ax_3d = fig_3d.add_subplot(111, projection='3d')
     role_colors = {"Bowler": "red", "Batsman": "green", "Fielder": "blue"}
@@ -227,18 +266,38 @@ def run_analysis_pipeline(video_path, role_model):
         xs, ys, zs = coords[frame, 0::3], coords[frame, 1::3], coords[frame, 2::3]
         role = roles[frame]
         color = role_colors.get(role, "gray")
+        
+        # Highlight joints that need correction
+        highlighted_joints = []
+        if all_corrections[frame]:
+            for correction in all_corrections[frame]:
+                if "elbow" in correction:
+                    highlighted_joints.extend([JOINT_MAP['right_shoulder'], JOINT_MAP['right_elbow'], JOINT_MAP['right_wrist']])
+                if "back" in correction:
+                    highlighted_joints.extend([JOINT_MAP['left_shoulder'], JOINT_MAP['right_shoulder'], JOINT_MAP['left_hip'], JOINT_MAP['right_hip']])
+                if "stance" in correction or "feet" in correction:
+                    highlighted_joints.extend([JOINT_MAP['left_hip'], JOINT_MAP['right_hip'], JOINT_MAP['left_ankle'], JOINT_MAP['right_ankle']])
+
         ax_3d.scatter(xs, ys, zs, c=color, s=20)
+        ax_3d.scatter(xs[highlighted_joints], ys[highlighted_joints], zs[highlighted_joints], c='yellow', s=100, edgecolors='black')
+
         for (i, j) in CONNECTIONS:
             if i < num_joints and j < num_joints:
-                ax_3d.plot([xs[i], xs[j]], [ys[i], ys[j]], [zs[i], zs[j]], c=color)
+                line_color = 'yellow' if i in highlighted_joints or j in highlighted_joints else color
+                ax_3d.plot([xs[i], xs[j]], [ys[i], ys[j]], [zs[i], zs[j]], c=line_color)
+
         ax_3d.set_xlim(np.nanmin(coords[:, 0::3])-0.5, np.nanmax(coords[:, 0::3])+0.5)
         ax_3d.set_ylim(np.nanmin(coords[:, 1::3])-0.5, np.nanmax(coords[:, 1::3])+0.5)
         ax_3d.set_zlim(np.nanmin(coords[:, 2::3])-0.5, np.nanmax(coords[:, 2::3])+0.5)
-        ax_3d.set_title(f"Frame {frame} - Role: {role}")
+        
+        title_text = f"Frame {frame} - Role: {role}\n"
+        if all_corrections[frame]:
+            title_text += "\n".join(all_corrections[frame])
+        ax_3d.set_title(title_text)
     
     anim = FuncAnimation(fig_3d, update_3d, frames=len(coords), interval=1000/FPS)
     anim.save(output_video_path, fps=FPS, extra_args=['-vcodec', 'libx264'])
-    print(f"✅ 3D animation saved to {output_video_path}")
+    print(f"✅ 3D animation with corrections saved to {output_video_path}")
     plt.close(fig_3d)
 
     output_graph_path = os.path.join(OUTPUT_DIR, f"{video_name}_angle_over_time_segmented.png")
@@ -266,14 +325,14 @@ def run_analysis_pipeline(video_path, role_model):
         'role': roles,
         'right_elbow_angle': right_elbow_angles,
         'back_angle': back_angles,
-        'spread_angle': spread_angles
+        'spread_angle': spread_angles,
+        'corrections': all_corrections
     })
     report_df.to_csv(output_csv_path, index=False)
     print(f"✅ Final analysis report saved to {output_csv_path}")
 
 # Run the pipeline with the AI model
 if VIDEO_PATHS:
-    # First, process one video to get a sample of keypoints for training
     sample_keypoint_df = process_video_to_keypoints(VIDEO_PATHS[0])
     if sample_keypoint_df is not None:
         role_classifier_model = load_or_train_model(sample_keypoint_df)
@@ -283,3 +342,4 @@ if VIDEO_PATHS:
         print("⚠️ Could not generate a sample keypoint dataframe for model training. Please check your video files.")
 else:
     print("\n--- No video paths provided. Please add video paths to the VIDEO_PATHS list. ---")
+
